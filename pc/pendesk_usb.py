@@ -12,7 +12,10 @@ Start: start.bat doppelklicken.
 import ctypes
 import json
 import plistlib
+import io
 import queue
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import socket
 import struct
 import sys
@@ -386,6 +389,156 @@ class TestGrabber:
 
 
 
+# ================================================================ Schneller Bildpfad
+def make_encoder():
+    """Schnellster verfügbarer JPEG-Kodierer: libjpeg-turbo > Pillow > (None = GDI+)."""
+    try:
+        import numpy as np
+        import simplejpeg
+
+        def enc(raw, w, h, q):
+            a = np.frombuffer(raw, np.uint8).reshape(h, w, 4)
+            return simplejpeg.encode_jpeg(a, quality=q, colorspace="BGRA", colorsubsampling="420", fastdct=True)
+        return enc, "libjpeg-turbo (schnell)"
+    except Exception:
+        pass
+    try:
+        from PIL import Image
+
+        def enc(raw, w, h, q):
+            im = Image.frombuffer("RGB", (w, h), raw, "raw", "BGRX", 0, 1)
+            b = io.BytesIO()
+            im.save(b, "JPEG", quality=q, subsampling=2)
+            return b.getvalue()
+        return enc, "Pillow (mittel)"
+    except Exception:
+        return None, "Windows GDI+ (langsam)"
+
+
+ENCODE, ENCODER_NAME = make_encoder()
+
+
+class RawGrabber:
+    """Bildschirm per GDI direkt in einen Speicherbereich (DIB) aufnehmen, ohne Kodierung."""
+
+    def __init__(self):
+        c = ctypes
+        H = c.c_void_p
+        self.u, self.g = c.windll.user32, c.windll.gdi32
+        u, g = self.u, self.g
+        u.GetDC.restype = H; u.GetDC.argtypes = [H]
+        u.ReleaseDC.argtypes = [H, H]
+        g.CreateCompatibleDC.restype = H; g.CreateCompatibleDC.argtypes = [H]
+        g.CreateDIBSection.restype = H
+        g.CreateDIBSection.argtypes = [H, H, c.c_uint, c.POINTER(H), H, wt.DWORD]
+        g.SelectObject.restype = H; g.SelectObject.argtypes = [H, H]
+        g.DeleteObject.argtypes = [H]; g.DeleteDC.argtypes = [H]
+        g.SetStretchBltMode.argtypes = [H, c.c_int]
+        g.SetBrushOrgEx.argtypes = [H, c.c_int, c.c_int, H]
+        g.BitBlt.argtypes = [H, c.c_int, c.c_int, c.c_int, c.c_int, H, c.c_int, c.c_int, wt.DWORD]
+        g.StretchBlt.argtypes = [H, c.c_int, c.c_int, c.c_int, c.c_int, H,
+                                 c.c_int, c.c_int, c.c_int, c.c_int, wt.DWORD]
+        u.DrawIconEx.argtypes = [H, c.c_int, c.c_int, H, c.c_int, c.c_int, c.c_uint, H, c.c_uint]
+        u.GetIconInfo.argtypes = [H, H]
+        u.GetCursorInfo.argtypes = [H]
+
+        class BITMAPINFOHEADER(c.Structure):
+            _fields_ = [("biSize", wt.DWORD), ("biWidth", c.c_long), ("biHeight", c.c_long),
+                        ("biPlanes", wt.WORD), ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+                        ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", c.c_long), ("biYPelsPerMeter", c.c_long),
+                        ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
+
+        class CURSORINFO(c.Structure):
+            _fields_ = [("cbSize", wt.DWORD), ("flags", wt.DWORD), ("hCursor", H), ("pt", wt.POINT)]
+
+        class ICONINFO(c.Structure):
+            _fields_ = [("fIcon", wt.BOOL), ("xHot", wt.DWORD), ("yHot", wt.DWORD),
+                        ("hbmMask", H), ("hbmColor", H)]
+
+        self.BIH, self.CURSORINFO, self.ICONINFO = BITMAPINFOHEADER, CURSORINFO, ICONINFO
+        self.screen_dc = u.GetDC(None)
+        self.mem_dc = g.CreateCompatibleDC(self.screen_dc)
+        self.bmp = self.old = self.bits = None
+        self.size = (0, 0)
+
+    def _ensure(self, ow, oh):
+        if self.size == (ow, oh):
+            return
+        c = ctypes
+        if self.bmp:
+            self.g.SelectObject(self.mem_dc, self.old)
+            self.g.DeleteObject(self.bmp)
+        bih = self.BIH(c.sizeof(self.BIH), ow, -oh, 1, 32, 0, 0, 0, 0, 0, 0)  # oben-nach-unten, 32 bit
+        bits = c.c_void_p()
+        self.bmp = self.g.CreateDIBSection(self.mem_dc, c.byref(bih), 0, c.byref(bits), None, 0)
+        if not self.bmp:
+            raise OSError("CreateDIBSection fehlgeschlagen")
+        self.bits = bits
+        self.old = self.g.SelectObject(self.mem_dc, self.bmp)
+        self.size = (ow, oh)
+
+    def _cursor(self, mx, my, mw, mh, sx, sy):
+        c = ctypes
+        ci = self.CURSORINFO()
+        ci.cbSize = c.sizeof(ci)
+        if not self.u.GetCursorInfo(c.byref(ci)) or not (ci.flags & 1) or not ci.hCursor:
+            return
+        px, py = ci.pt.x - mx, ci.pt.y - my
+        if not (-64 <= px < mw + 64 and -64 <= py < mh + 64):
+            return
+        ii = self.ICONINFO()
+        hx = hy = 0
+        if self.u.GetIconInfo(ci.hCursor, c.byref(ii)):
+            hx, hy = ii.xHot, ii.yHot
+            if ii.hbmMask:
+                self.g.DeleteObject(ii.hbmMask)
+            if ii.hbmColor:
+                self.g.DeleteObject(ii.hbmColor)
+        self.u.DrawIconEx(self.mem_dc, int(px * sx) - hx, int(py * sy) - hy, ci.hCursor, 0, 0, 0, None, 3)
+
+    def capture(self, mon, scale):
+        x, y, w, h = mon["x"], mon["y"], mon["w"], mon["h"]
+        ow, oh = max(int(w * scale) // 2 * 2, 2), max(int(h * scale) // 2 * 2, 2)
+        self._ensure(ow, oh)
+        if (ow, oh) == (w, h):
+            self.g.BitBlt(self.mem_dc, 0, 0, w, h, self.screen_dc, x, y, 0x00CC0020)
+        else:
+            self.g.SetStretchBltMode(self.mem_dc, 4)
+            self.g.SetBrushOrgEx(self.mem_dc, 0, 0, None)
+            self.g.StretchBlt(self.mem_dc, 0, 0, ow, oh, self.screen_dc, x, y, w, h, 0x00CC0020)
+        self._cursor(x, y, w, h, ow / w, oh / h)
+        self.g.GdiFlush()
+        return ctypes.string_at(self.bits, ow * oh * 4), ow, oh
+
+    def close(self):
+        if self.bmp:
+            self.g.SelectObject(self.mem_dc, self.old)
+            self.g.DeleteObject(self.bmp)
+        self.g.DeleteDC(self.mem_dc)
+        self.u.ReleaseDC(None, self.screen_dc)
+
+
+class TestRawGrabber:
+    """Testbild für Nicht-Windows-Systeme."""
+
+    def __init__(self):
+        self.n = 0
+
+    def capture(self, mon, scale):
+        self.n += 1
+        w, h = int(mon["w"] * scale) // 2 * 2, int(mon["h"] * scale) // 2 * 2
+        row = bytes([90, 60, 30, 255]) * w
+        buf = bytearray(row * h)
+        x = (self.n * 10) % max(w - 80, 1)
+        for yy in range(h // 3, h // 3 + 80):
+            o = (yy * w + x) * 4
+            buf[o:o + 320] = bytes([26, 122, 255, 255]) * 80
+        return bytes(buf), w, h
+
+    def close(self):
+        pass
+
+
 # ================================================================ USB (usbmux)
 class UsbmuxError(Exception):
     pass
@@ -475,7 +628,17 @@ def run_session(sock):
     requests = queue.Queue()
     stop = threading.Event()
 
-    def frame_loop():
+    def parse(r, local_mons):
+        i = int(r.get("m", 0))
+        if not 0 <= i < len(local_mons):
+            local_mons[:] = list_monitors()
+            i = min(max(i, 0), len(local_mons) - 1)
+        scale = min(max(float(r.get("s", 0.75)), 0.25), 1.0)
+        quality = min(max(int(r.get("q", 60)), 20), 95)
+        return local_mons[i], scale, quality
+
+    def frame_loop_slow():
+        """Alter Weg (nur wenn kein schneller Kodierer installiert ist)."""
         try:
             grab = WinGrabber() if IS_WIN else TestGrabber()
         except Exception as e:
@@ -488,19 +651,55 @@ def run_session(sock):
                     r = requests.get(timeout=0.5)
                 except queue.Empty:
                     continue
-                i = int(r.get("m", 0))
-                if not 0 <= i < len(local_mons):
-                    local_mons = list_monitors()
-                    i = min(max(i, 0), len(local_mons) - 1)
-                scale = min(max(float(r.get("s", 0.75)), 0.25), 1.0)
-                quality = min(max(int(r.get("q", 60)), 20), 95)
-                send(FRAME, grab.frame(local_mons[i], scale, quality))
+                m, scale, quality = parse(r, local_mons)
+                send(FRAME, grab.frame(m, scale, quality))
         except (ConnectionError, OSError):
             stop.set()
         finally:
             grab.close()
 
-    threading.Thread(target=frame_loop, daemon=True).start()
+    def frame_loop_fast():
+        """Aufnahme und Kodierung laufen parallel: während Bild N kodiert wird, wird N+1 aufgenommen."""
+        try:
+            grab = RawGrabber() if IS_WIN else TestRawGrabber()
+        except Exception as e:
+            print("  Bildschirmaufnahme nicht möglich:", e)
+            return
+        local_mons = list_monitors()
+        pool = ThreadPoolExecutor(max_workers=2)
+        ready = queue.Queue()   # Kodier-Aufträge in Reihenfolge
+
+        def sender():
+            try:
+                while not stop.is_set():
+                    try:
+                        fut = ready.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+                    if fut is None:
+                        return
+                    send(FRAME, fut.result())
+            except (ConnectionError, OSError):
+                stop.set()
+
+        threading.Thread(target=sender, daemon=True).start()
+        try:
+            while not stop.is_set():
+                try:
+                    r = requests.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                m, scale, quality = parse(r, local_mons)
+                raw, w, h = grab.capture(m, scale)
+                ready.put(pool.submit(ENCODE, raw, w, h, quality))
+        except (ConnectionError, OSError):
+            stop.set()
+        finally:
+            ready.put(None)
+            pool.shutdown(wait=False)
+            grab.close()
+
+    threading.Thread(target=frame_loop_fast if ENCODE else frame_loop_slow, daemon=True).start()
     rf = sock.makefile("rb", buffering=65536)
     try:
         while not stop.is_set():
@@ -551,6 +750,7 @@ def main():
     print("=" * 64)
     print("  PenDesk USB läuft")
     print(f"  Stift: {INJ.mode}")
+    print(f"  Bild:  {ENCODER_NAME}")
     for i, m in enumerate(list_monitors()):
         print(f"  Monitor {i + 1}: {m['w']} x {m['h']}{'  (Haupt)' if m['primary'] else ''}")
     print("  Beenden: dieses Fenster schliessen")
