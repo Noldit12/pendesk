@@ -1,0 +1,42 @@
+name: PenDesk
+options:
+  bundleIdPrefix: ch.noldit
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  PenDesk:
+    type: application
+    platform: iOS
+    sources:
+      - PenDesk
+    info:
+      path: PenDesk/Info.plist
+      properties:
+        CFBundleDisplayName: PenDesk
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: true
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations: {}
+        NSLocalNetworkUsageDescription: PenDesk empfängt die Verbindung vom PC über USB.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.noldit.pendesk
+        PRODUCT_NAME: PenDesk
+        TARGETED_DEVICE_FAMILY: "2"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+        ENABLE_BITCODE: "NO"

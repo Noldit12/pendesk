@@ -1,0 +1,38 @@
+name: iPad-App bauen
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode-Projekt erzeugen
+        run: |
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+
+      - name: App bauen (ohne Signatur)
+        run: |
+          cd ios
+          xcodebuild -project PenDesk.xcodeproj -target PenDesk -configuration Release \
+            -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build > build.log 2>&1 || { grep -E "error:" -A3 build.log | head -120; tail -40 build.log; exit 1; }
+          grep -E "warning:" build.log | grep -v "deprecated" | head -30 || true
+          test -d build/Release-iphoneos/PenDesk.app
+
+      - name: IPA packen
+        run: |
+          cd ios
+          rm -rf Payload && mkdir Payload
+          cp -R build/Release-iphoneos/PenDesk.app Payload/
+          zip -qr PenDesk.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PenDesk-iPad-App
+          path: ios/PenDesk.ipa

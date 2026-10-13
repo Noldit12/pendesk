@@ -1,0 +1,37 @@
+PenDesk USB – PC mit dem Apple Pencil bedienen, nur über USB-C
+==============================================================
+
+Inhalt:
+  pc\    Programm für den Windows-PC (start.bat)
+  ios\   Quellcode der iPad-App (wird in der Cloud zu einer App gebaut)
+
+1) IPAD-APP BAUEN (einmalig, ohne Mac)
+   - Ordner in ein GitHub-Repository hochladen.
+   - GitHub baut die App automatisch (Reiter "Actions", ca. 5 Min).
+   - Unter "Actions" -> letzter Lauf -> "PenDesk-iPad-App" herunterladen,
+     darin liegt PenDesk.ipa.
+
+2) APP AUFS IPAD (mit Sideloadly, gratis)
+   - Am PC iTunes von apple.com installieren (NICHT aus dem Microsoft Store),
+     dann Sideloadly von sideloadly.io.
+   - iPad per USB-C anschliessen, entsperren, "Vertrauen" tippen.
+   - Sideloadly: PenDesk.ipa reinziehen, Apple-ID eingeben, Start.
+   - iPad: Einstellungen -> Datenschutz & Sicherheit -> Entwicklermodus -> ein (Neustart).
+   - iPad: Einstellungen -> Allgemein -> VPN & Geräteverwaltung -> deine Apple-ID -> Vertrauen.
+   - Mit kostenloser Apple-ID läuft die App 7 Tage, dann in Sideloadly erneut "Start".
+
+3) BENUTZEN
+   - iPad per USB-C an den PC, PenDesk-App öffnen.
+   - Am PC pc\start.bat starten. Es verbindet automatisch.
+   - Keine IP, kein WLAN, keine Firewall-Freigabe nötig.
+
+BEDIENUNG
+   - Pencil = Stift mit Druck und Neigung. Finger werden ignoriert.
+   - Pencil 2 doppelt tippen = Radierer an/aus.
+   - Rechtsklick: nächster Tipp ist ein Rechtsklick.
+   - Monitor / Qualität / Druck: Auswahl-Menüs. "Bild aus" = geringste Verzögerung.
+   - ▴ blendet die Leiste aus, ▾ holt sie zurück.
+
+SICHERHEIT
+   - Die App nimmt nur Verbindungen über USB an, Anfragen aus dem WLAN werden abgelehnt.
+   - Am PC wird kein Port geöffnet.
